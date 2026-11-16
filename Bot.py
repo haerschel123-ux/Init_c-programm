@@ -2,20 +2,30 @@
 """Local operator console and a separate authenticated DayZ mission endpoint."""
 
 import argparse
+import base64
+import hashlib
 import hmac
 import json
 import math
 import os
+import platform
+import queue
 import re
 import secrets
+import shutil
+import signal
 import socket
+import subprocess
+import tempfile
 import threading
 import time
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
+from urllib.request import urlopen
 
 
 ROOT = Path(__file__).resolve().parent
@@ -34,6 +44,12 @@ VEHICLE_ID = re.compile(r"car-[1-9][0-9]{0,8}", re.ASCII)
 CLASS_NAME = re.compile(r"[A-Za-z0-9_]{1,80}", re.ASCII)
 BRIDGE_KEY = re.compile(r"[A-Za-z0-9_-]{43}", re.ASCII)
 HOST_NAME = re.compile(r"[A-Za-z0-9.-]{1,253}", re.ASCII)
+QUICK_TUNNEL_URL = re.compile(r"https://[a-z0-9-]{1,63}\.trycloudflare\.com(?=[\s|]|$)")
+TUNNEL_RELEASE = "2026.11.0"
+TUNNEL_ASSETS = {
+    "x86_64": ("amd64", 40_283_099, "51f7c68b57ed7269164075d7e789efce5b59355982f06392deeb037d982a51fd"),
+    "aarch64": ("arm64", 37_668_707, "abe54a006acf9faf2d19ee9d953cb0d0804e92f59c5382a162e57b84d086f56f"),
+}
 ITEMS = {
     "BandageDressing": "Verband",
     "BakedBeansCan": "Bohnendose",
@@ -73,10 +89,11 @@ EMPTY_REPLY = {
 
 
 class RequestError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, *, challenge=False):
         super().__init__(message)
         self.status = status
         self.message = message
+        self.challenge = challenge
 
 
 def invalid(message):
@@ -125,9 +142,9 @@ def bridge_origin(value, local_bridge):
     return f"https://{parts.netloc.lower()}"
 
 
-def read_bridge_key(directory):
+def read_key(directory, filename):
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    key_path = directory / "bridge.key"
+    key_path = directory / filename
     try:
         descriptor = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
@@ -137,10 +154,108 @@ def read_bridge_key(directory):
             stream.write(secrets.token_urlsafe(32) + "\n")
     key = key_path.read_text(encoding="ascii").strip()
     if not BRIDGE_KEY.fullmatch(key):
-        raise ValueError("Ungültiger Verbindungsschlüssel. Benenne bridge.key um und starte neu.")
+        raise ValueError(f"Ungültiger Schlüssel in {filename}. Benenne die Datei um und starte neu.")
     if os.name == "posix":
         key_path.chmod(0o600)
     return key
+
+
+def tunnel_client(directory):
+    installed = shutil.which("cloudflared")
+    if installed:
+        return installed
+
+    asset = TUNNEL_ASSETS.get(platform.machine().lower())
+    if platform.system() != "Linux" or asset is None:
+        raise ValueError("Installiere cloudflared für dieses Gerät, bevor du den HTTPS-Zugang aktivierst.")
+    architecture, expected_size, expected_hash = asset
+    filename = f"cloudflared-linux-{architecture}"
+    client = directory / f"{filename}-{TUNNEL_RELEASE}"
+    if client.is_file() and client.stat().st_size == expected_size:
+        with client.open("rb") as stream:
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(256 * 1024), b""):
+                digest.update(block)
+        if digest.hexdigest() == expected_hash:
+            client.chmod(0o700)
+            return str(client)
+
+    url = f"https://github.com/cloudflare/cloudflared/releases/download/{TUNNEL_RELEASE}/{filename}"
+    print(f"HTTPS-Zugang: Lade Cloudflare Tunnel {TUNNEL_RELEASE}.", flush=True)
+    with tempfile.NamedTemporaryFile(dir=directory, prefix=".tunnel-", delete=False) as output:
+        download = Path(output.name)
+        try:
+            deadline = time.monotonic() + 120
+            size = 0
+            digest = hashlib.sha256()
+            with urlopen(url, timeout=15) as response:
+                for block in iter(lambda: response.read(256 * 1024), b""):
+                    size += len(block)
+                    if size > expected_size or time.monotonic() > deadline:
+                        raise ValueError("Die Größe oder Dauer des Tunnel-Downloads überschreitet das erwartete Limit.")
+                    output.write(block)
+                    digest.update(block)
+            if size != expected_size or digest.hexdigest() != expected_hash:
+                raise ValueError("Die Prüfsumme des Tunnel-Clients stimmt nicht.")
+            output.close()
+            download.chmod(0o700)
+            download.replace(client)
+        finally:
+            download.unlink(missing_ok=True)
+    return str(client)
+
+
+@contextmanager
+def quick_tunnel(client, target):
+    process = subprocess.Popen(
+        [client, "tunnel", "--no-autoupdate", "--url", target],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    addresses = queue.Queue(maxsize=1)
+    stopping = threading.Event()
+
+    def read_address():
+        address = None
+        registered = False
+        published = False
+        for line in process.stdout:
+            match = QUICK_TUNNEL_URL.search(line)
+            if match:
+                address = match.group()
+            if "Registered tunnel connection" in line:
+                registered = True
+            if address and registered and not published:
+                addresses.put_nowait(address)
+                published = True
+        if published and not stopping.is_set():
+            print("Der HTTPS-Tunnel wurde beendet. Starte Bot.py für eine neue Adresse neu.", flush=True)
+
+    reader = threading.Thread(target=read_address, daemon=True)
+    reader.start()
+    try:
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            try:
+                address = addresses.get(timeout=1)
+                break
+            except queue.Empty:
+                if process.poll() is not None:
+                    raise ValueError(f"Der Tunnel-Client wurde vor der Verbindung beendet (Code {process.returncode}).")
+        else:
+            raise ValueError("Cloudflare kam innerhalb von 45 Sekunden nicht online. Prüfe ausgehende Verbindungen zum Port 7844.")
+        yield address
+    finally:
+        stopping.set()
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=4)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        reader.join(timeout=2)
+        process.stdout.close()
 
 
 def equal_secret(supplied, expected):
@@ -383,12 +498,21 @@ class PanelState:
             }
 
 
+@dataclass(frozen=True)
+class RemoteAccess:
+    origin: str
+    host: str
+    credentials: str
+    page: bytes
+
+
 class PanelHTTPServer(ThreadingHTTPServer):
     request_queue_size = 24
 
     def __init__(self, port, state, bridge=False):
         self.state = state
         self.bridge = bridge
+        self.remote = None
         self.request_slots = threading.BoundedSemaphore(20)
         super().__init__(("127.0.0.1", port), RequestHandler)
 
@@ -421,7 +545,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-    def send_payload(self, status, body, content_type):
+    def send_payload(self, status, body, content_type, *, challenge=False):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -429,6 +553,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
+        if challenge:
+            self.send_header("WWW-Authenticate", 'Basic realm="Brigarde Init Panel", charset="UTF-8"')
         if content_type.startswith("text/html"):
             nonce = self.server.state.nonce
             self.send_header(
@@ -440,22 +566,45 @@ class RequestHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def send_json(self, status, data):
+    def send_json(self, status, data, *, challenge=False):
         body = json.dumps(data, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
-        self.send_payload(status, body.encode("utf-8"), "application/json; charset=utf-8")
+        self.send_payload(status, body.encode("utf-8"), "application/json; charset=utf-8", challenge=challenge)
 
-    def verify_local(self, write=False):
+    def is_local_host(self, host):
         port = self.server.server_port
-        valid_hosts = (f"127.0.0.1:{port}", f"localhost:{port}")
-        host = self.headers.get("Host")
-        if host not in valid_hosts:
-            raise RequestError(HTTPStatus.FORBIDDEN, "Das Panel verwendet eine lokale Adresse.")
+        return host in (f"127.0.0.1:{port}", f"localhost:{port}")
+
+    def verify_https(self, remote):
+        if self.headers.get("Host") != remote.host or self.headers.get("X-Forwarded-Proto") != "https":
+            raise RequestError(HTTPStatus.FORBIDDEN, "Verwende die HTTPS-Adresse aus der Startausgabe.")
+
+    def verify_bridge(self):
+        remote = self.server.remote
+        if remote and not self.is_local_host(self.headers.get("Host")):
+            self.verify_https(remote)
+
+    def verify_panel(self, write=False):
+        if self.server.bridge:
+            remote = self.server.remote
+            if remote is None:
+                raise RequestError(HTTPStatus.NOT_FOUND, "Route nicht gefunden.")
+            self.verify_https(remote)
+            scheme, _, credentials = self.headers.get("Authorization", "").partition(" ")
+            if scheme.lower() != "basic" or not equal_secret(credentials, remote.credentials):
+                raise RequestError(HTTPStatus.UNAUTHORIZED, "Anmeldung erforderlich.", challenge=True)
+            page, expected_origin = remote.page, remote.origin
+        else:
+            host = self.headers.get("Host")
+            if not self.is_local_host(host):
+                raise RequestError(HTTPStatus.FORBIDDEN, "Das Panel verwendet eine lokale Adresse.")
+            page, expected_origin = self.server.state.page, f"http://{host}"
         if write:
             origin = self.headers.get("Origin")
-            if (origin is not None and origin != f"http://{host}") or not equal_secret(
+            if (origin is not None and origin != expected_origin) or not equal_secret(
                 self.headers.get("X-Panel-CSRF"), self.server.state.csrf
             ):
-                raise RequestError(HTTPStatus.FORBIDDEN, "Die lokale Anfrage ist nicht autorisiert.")
+                raise RequestError(HTTPStatus.FORBIDDEN, "Die Anfrage ist nicht autorisiert.")
+        return page
 
     def read_json(self):
         if (
@@ -482,25 +631,25 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            if self.server.bridge:
-                if self.path == "/health":
-                    return self.send_json(HTTPStatus.OK, {"protocol": PROTOCOL})
-            else:
-                self.verify_local()
+            if self.server.bridge and self.path == "/health":
+                self.verify_bridge()
+                return self.send_json(HTTPStatus.OK, {"protocol": PROTOCOL})
+            if self.path in ("/", "/local/state"):
+                page = self.verify_panel()
                 if self.path == "/":
-                    return self.send_payload(HTTPStatus.OK, self.server.state.page, "text/html; charset=utf-8")
-                if self.path == "/local/state":
-                    return self.send_json(HTTPStatus.OK, self.server.state.dashboard())
+                    return self.send_payload(HTTPStatus.OK, page, "text/html; charset=utf-8")
+                return self.send_json(HTTPStatus.OK, self.server.state.dashboard())
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Route nicht gefunden."})
         except RequestError as exc:
-            self.send_json(exc.status, {"error": exc.message})
+            self.send_json(exc.status, {"error": exc.message}, challenge=exc.challenge)
 
     def do_POST(self):
         try:
             if self.server.bridge and self.path == "/dayz/poll":
+                self.verify_bridge()
                 return self.send_json(HTTPStatus.OK, self.server.state.poll(self.read_json()))
-            if not self.server.bridge and self.path in ("/local/config", "/local/commands"):
-                self.verify_local(write=True)
+            if self.path in ("/local/config", "/local/commands"):
+                self.verify_panel(write=True)
                 payload = self.read_json()
                 if self.path == "/local/commands":
                     return self.send_json(HTTPStatus.CREATED, self.server.state.queue(payload))
@@ -511,9 +660,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 )
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Route nicht gefunden."})
         except RequestError as exc:
-            self.send_json(exc.status, {"error": exc.message})
+            self.send_json(exc.status, {"error": exc.message}, challenge=exc.challenge)
         except socket.timeout:
             self.send_json(HTTPStatus.REQUEST_TIMEOUT, {"error": "Zeitlimit beim Lesen erreicht."})
+
+
+def stop_on_signal(signum, frame):
+    raise KeyboardInterrupt
 
 
 def main():
@@ -521,20 +674,37 @@ def main():
     parser.add_argument("--panel-port", type=int, default=8787)
     parser.add_argument("--bridge-port", type=int, default=8788)
     parser.add_argument("--state-dir", type=Path, default=ROOT / "data")
+    parser.add_argument("--web-tunnel", action="store_true", help="Start an authenticated HTTPS tunnel")
     args = parser.parse_args()
     ports = {args.panel_port, args.bridge_port}
     if len(ports) != 2 or any(not 1024 <= port <= 65535 for port in ports):
         parser.error("Wähle zwei unterschiedliche Ports zwischen 1024 und 65535.")
+    web_tunnel = args.web_tunnel or (ROOT / "tunnel.enabled").is_file()
+    if web_tunnel:
+        signal.signal(signal.SIGTERM, stop_on_signal)
     try:
-        state = PanelState(read_bridge_key(args.state_dir), args.bridge_port, PANEL_HTML)
+        state = PanelState(read_key(args.state_dir, "bridge.key"), args.bridge_port, PANEL_HTML)
         with PanelHTTPServer(args.panel_port, state) as panel:
             with PanelHTTPServer(args.bridge_port, state, bridge=True) as bridge:
                 thread = threading.Thread(target=bridge.serve_forever, daemon=True)
                 thread.start()
-                print(f"Panel   http://127.0.0.1:{args.panel_port}", flush=True)
-                print(f"Bridge  {state.bridge_url}/health", flush=True)
+                print(f"Webpanel auf dem Gerät mit Python: http://127.0.0.1:{args.panel_port}", flush=True)
+                print(f"DayZ-Brückencheck lokal: {state.bridge_url}/health", flush=True)
                 try:
-                    panel.serve_forever()
+                    with ExitStack() as managed:
+                        if web_tunnel:
+                            client = tunnel_client(args.state_dir)
+                            key = read_key(args.state_dir, "panel.key")
+                            address = managed.enter_context(quick_tunnel(client, state.bridge_url))
+                            bridge.remote = RemoteAccess(
+                                address,
+                                urlsplit(address).netloc,
+                                base64.b64encode(f"admin:{key}".encode("ascii")).decode("ascii"),
+                                state.page.replace(state.bridge_url.encode(), address.encode()),
+                            )
+                            print(f"Webpanel HTTPS: {address}", flush=True)
+                            print(f"Anmeldung: Benutzer admin, Passwort in {args.state_dir / 'panel.key'}", flush=True)
+                        panel.serve_forever()
                 except KeyboardInterrupt:
                     pass
                 finally:

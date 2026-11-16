@@ -26,6 +26,16 @@ Die Datei `Bot.py` enthält die vollständige Weboberfläche und kann als einzel
 
 Der Python-Prozess muss nur während der Nutzung laufen. Mit `Strg+C` beendest du ihn. Beim ersten Start legt das Programm in `data/bridge.key` einen eigenen zufälligen Verbindungsschlüssel an. Die exportierte JSON enthält denselben Schlüssel. Halte beide Dateien privat und außerhalb geteilter Quellen. Für einen neuen Schlüssel beendest du das Panel, benennst `data/bridge.key` um, startest erneut und exportierst eine neue Missionskonfiguration.
 
+## Auf PebbleHost vom Handy öffnen
+
+Läuft `Bot.py` auf PebbleHost, zeigen die Adressen mit `127.0.0.1` auf den jeweiligen Rechner. Der folgende Modus gibt dir eine temporäre HTTPS-Adresse für den Zugriff vom Handy.
+
+1. Öffne im **File Manager** die vorhandene `pebble-python-config.json`. Setze `main` auf `Bot.py` und `pythonVersion` auf `3.12`. [PebbleHost Python-Einrichtung](https://help.pebblehost.com/en/discord-bot-hosting/how-to-setup-your-python-based-discord-bot)
+2. Lege im Ordner der `Bot.py` eine Datei namens `tunnel.enabled` an. Ihr Inhalt ist frei. Bei einem eigenen Startbefehl kannst du den gleichen Modus mit `python Bot.py --web-tunnel` aktivieren.
+3. Starte den PebbleHost-Bot neu. Beim ersten Start lädt `Bot.py` auf Linux bei Bedarf den offiziellen Cloudflare-Client und prüft dessen SHA-256-Prüfsumme. Der Tunnel braucht ausgehenden Netzwerkzugriff auf TCP oder UDP Port `7844`. [Cloudflare-Downloads](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/) · [Cloudflare-Netzanforderungen](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/troubleshoot-tunnels/connectivity-prechecks/)
+4. Öffne die in der Konsole unter **Webpanel HTTPS** ausgegebene Adresse. Melde dich im Browser als `admin` an. Das zufällig erzeugte Passwort steht auf dem Hoster im **File Manager** in `data/panel.key`.
+5. Für eine externe, skriptfähige DayZ-Mission hat die Maske **Verbindung** die HTTPS-Adresse bereits vorbelegt. Exportiere die Missionskonfiguration passend zur laufenden Sitzung. Ein Neustart des Tunnels vergibt eine neue Adresse. [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
+
 ## In eine Testmission einsetzen
 
 Der PC-Dedicated-Server muss bereits mit der gewünschten Karte startbar sein. Nutze eine Kopie seiner Missionsdateien und eigene Test-Spielstände. Bei einer normalen PC-Installation liegt der Missionsordner unter `mpmissions/`. Maßgeblich ist der Ordner der im Dedicated-Server ausgewählten Mission.
