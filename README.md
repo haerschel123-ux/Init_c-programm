@@ -8,15 +8,15 @@ Ein lokales Webpanel mit einem echten DayZ-Missionsskript in Enforce Script. Es 
 
 Installiere Python **3.10 oder neuer**. Für das Panel sind keine Python-Pakete, Datenbanken oder Nitrado-Zugangsdaten erforderlich.
 
-Die Datei `bot.py` enthält die vollständige Weboberfläche und kann als einzelne Datei gestartet werden. Das ZIP enthält zusätzlich die Dateien für die DayZ-Testmission.
+Die Datei `Bot.py` enthält die vollständige Weboberfläche und kann als einzelne Datei gestartet werden. Das ZIP enthält zusätzlich die Dateien für die DayZ-Testmission.
 
-1. Auf Android öffnest du die aktuelle `bot.py` in Pydroid 3 und tippst auf den Startknopf **▶**. Auf einem PC führst du in ihrem Ordner diesen Befehl aus.
+1. Auf Android öffnest du die aktuelle `Bot.py` in Pydroid 3 und tippst auf den Startknopf **▶**. Auf einem PC führst du in ihrem Ordner diesen Befehl aus.
 
    ```bash
-   python bot.py
+   python Bot.py
    ```
 
-   Falls dein System Python als `python3` bereitstellt, verwende `python3 bot.py`.
+   Falls dein System Python als `python3` bereitstellt, verwende `python3 Bot.py`.
 2. Lass Python laufen und öffne auf demselben Gerät [http://127.0.0.1:8787](http://127.0.0.1:8787) im Browser. Unter **Verbindung** kannst du die Missionskonfiguration herunterladen. Wenn der DayZ-Testserver auf demselben Gerät läuft, lass die lokale Vorgabe `http://127.0.0.1:8788` stehen.
 
 | Adresse | Zweck |
@@ -76,7 +76,7 @@ Das Panel zeigt Aufträge als **Wartet**, **Übermittelt**, **Ausgeführt**, **F
 
 ## Dateibestand und Prüfstatus
 
-- `bot.py` enthält die vollständige Oberfläche und startet das lokale Panel sowie die geschützte Bridge ohne externe Ressourcen.
+- `Bot.py` enthält die vollständige Oberfläche und startet das lokale Panel sowie die geschützte Bridge ohne externe Ressourcen.
 - `mission/init.c` und `mission/custom/brigardeAdmin.c` sind die vollständigen Missionsskripte.
 - Der lokale Start, die HTTP-Zugriffstrennung und der Auftragsfluss wurden mit einem simulierten Missionsclient geprüft. Die JavaScript-Bedienlogik wurde mit einem simulierten DOM getestet. Ein Enforce-Script-Compiler und ein DayZ-Dedicated-Server standen für die Prüfung nicht zur Verfügung. Der Kompilier- und Ingame-Test erfolgt auf der eigenen Testinstanz.
 
