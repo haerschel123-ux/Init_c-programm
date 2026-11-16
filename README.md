@@ -8,15 +8,16 @@ Ein lokales Webpanel mit einem echten DayZ-Missionsskript in Enforce Script. Es 
 
 Installiere Python **3.10 oder neuer**. Für das Panel sind keine Python-Pakete, Datenbanken oder Nitrado-Zugangsdaten erforderlich.
 
-1. Entpacke das ZIP und öffne ein Terminal im Ordner `Brigarde_Init_Panel`.
-2. Starte das Panel.
+Die Datei `brigarde_init_panel.py` enthält die vollständige Weboberfläche und kann als einzelne Datei gestartet werden. Das ZIP enthält zusätzlich die Dateien für die DayZ-Testmission.
+
+1. Auf Android öffnest du die aktuelle `brigarde_init_panel.py` in Pydroid 3 und tippst auf den Startknopf **▶**. Auf einem PC führst du in ihrem Ordner diesen Befehl aus.
 
    ```bash
    python brigarde_init_panel.py
    ```
 
    Falls dein System Python als `python3` bereitstellt, verwende `python3 brigarde_init_panel.py`.
-3. Öffne [http://127.0.0.1:8787](http://127.0.0.1:8787) im Browser. Unter **Verbindung** kannst du die Missionskonfiguration herunterladen. Wenn der DayZ-Testserver auf demselben Gerät läuft, lass die lokale Vorgabe `http://127.0.0.1:8788` stehen.
+2. Lass Python laufen und öffne auf demselben Gerät [http://127.0.0.1:8787](http://127.0.0.1:8787) im Browser. Unter **Verbindung** kannst du die Missionskonfiguration herunterladen. Wenn der DayZ-Testserver auf demselben Gerät läuft, lass die lokale Vorgabe `http://127.0.0.1:8788` stehen.
 
 | Adresse | Zweck |
 |---|---|
@@ -75,8 +76,7 @@ Das Panel zeigt Aufträge als **Wartet**, **Übermittelt**, **Ausgeführt**, **F
 
 ## Dateibestand und Prüfstatus
 
-- `brigarde_init_panel.py` startet das lokale Panel und die geschützte Bridge.
-- `panel.html` enthält Oberfläche, X/Z-Raster und Formularlogik ohne externe Ressourcen.
+- `brigarde_init_panel.py` enthält die vollständige Oberfläche und startet das lokale Panel sowie die geschützte Bridge ohne externe Ressourcen.
 - `mission/init.c` und `mission/custom/brigardeAdmin.c` sind die vollständigen Missionsskripte.
 - Der lokale Start, die HTTP-Zugriffstrennung und der Auftragsfluss wurden mit einem simulierten Missionsclient geprüft. Die JavaScript-Bedienlogik wurde mit einem simulierten DOM getestet. Ein Enforce-Script-Compiler und ein DayZ-Dedicated-Server standen für die Prüfung nicht zur Verfügung. Der Kompilier- und Ingame-Test erfolgt auf der eigenen Testinstanz.
 
